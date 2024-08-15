@@ -11,7 +11,8 @@ import (
 
 const (
 	wgConfigPath = "/etc/wireguard/wg0.conf"
-	ipBase       = "10.25."
+	ipv4Base     = "10.25."
+	ipv6Base     = "fd42:42:42::"
 )
 
 // Function to execute a command and return its output or error
@@ -47,13 +48,21 @@ func parseWGConfig() (map[string]string, error) {
 }
 
 // Function to get the next available IP address
-func getNextIP(existingIPs map[string]bool) (string, error) {
+func getNextIP(existingIPs map[string]bool, isIPv6 bool) (string, error) {
+	ipBase := ipv4Base
+	ipPrefix := "0.0.0.0/32"
+	if isIPv6 {
+		ipBase = ipv6Base
+		ipPrefix = "0:0:0:0:0:0:0:0/128"
+	}
+
 	for i := 0; i < 255; i++ {
 		ip := fmt.Sprintf("%s%d", ipBase, i)
 		if !existingIPs[ip] {
 			return ip, nil
 		}
 	}
+
 	return "", fmt.Errorf("no available IP addresses")
 }
 
@@ -101,14 +110,19 @@ func readWGConfig() (map[string]string, error) {
 }
 
 // Function to write updated WireGuard configuration
-func writeWGConfig(newClientPublicKey, newClientIP, newClientPrivateKey, newClientPresharedKey string) error {
+func writeWGConfig(newClientPublicKey, newClientIPv4, newClientIPv6, newClientPrivateKey, newClientPresharedKey string) error {
 	configFile, err := os.ReadFile(wgConfigPath)
 	if err != nil {
 		return err
 	}
 
 	config := string(configFile)
-	config += fmt.Sprintf("\n[Peer]\nPublicKey = %s\nAllowedIPs = %s\nPresharedKey = %s\n", newClientPublicKey, newClientIP, newClientPresharedKey)
+	config += fmt.Sprintf(`
+[Peer]
+PublicKey = %s
+AllowedIPs = %s, %s
+PresharedKey = %s
+`, newClientPublicKey, newClientIPv4, newClientIPv6, newClientPresharedKey)
 
 	err = os.WriteFile(wgConfigPath, []byte(config), 0644)
 	if err != nil {
@@ -144,7 +158,7 @@ func handleTransferCommand() error {
 }
 
 func handleNewClientCommand() error {
-	peers, err := readWGConfig()
+	peers, err := parseWGConfig()
 	if err != nil {
 		return err
 	}
@@ -154,7 +168,12 @@ func handleNewClientCommand() error {
 		existingIPs[ip] = true
 	}
 
-	newClientIP, err := getNextIP(existingIPs)
+	newClientIPv4, err := getNextIP(existingIPs, false)
+	if err != nil {
+		return err
+	}
+
+	newClientIPv6, err := getNextIP(existingIPs, true)
 	if err != nil {
 		return err
 	}
@@ -164,7 +183,7 @@ func handleNewClientCommand() error {
 		return err
 	}
 
-	err = writeWGConfig(publicKey, newClientIP, privateKey, presharedKey)
+	err = writeWGConfig(publicKey, newClientIPv4, newClientIPv6, privateKey, presharedKey)
 	if err != nil {
 		return err
 	}
@@ -173,7 +192,8 @@ func handleNewClientCommand() error {
 		"privatekey":   privateKey,
 		"publickey":    publicKey,
 		"presharedkey": presharedKey,
-		"ip":           newClientIP,
+		"ipv4":         newClientIPv4,
+		"ipv6":         newClientIPv6,
 	}
 
 	jsonResult, err := json.Marshal(result)
