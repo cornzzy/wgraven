@@ -1,180 +1,126 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
-	"net"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
-
-	"golang.org/x/crypto/ed25519"
+	"time"
 )
 
 const (
-	wgConfPath = "/etc/wireguard/wg0.conf"
-	ipRange    = "10.25"
-	ipStart    = 2 // Starting IP index in the range
-	ipEnd      = 254 // Ending IP index
+	wgConfigPath = "/etc/wireguard/wg0.conf"
+	ipBase       = "10.25."
 )
 
-func runCommand(cmd string, args ...string) (string, error) {
-	out, err := exec.Command(cmd, args...).CombinedOutput()
-	return string(out), err
+// Function to execute a command and return its output or error
+func execCommand(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err := cmd.Run()
+	return out.String(), err
 }
 
-func parseWGConf() (map[string]struct{}, error) {
-	conf, err := ioutil.ReadFile(wgConfPath)
+// Function to parse WireGuard configuration
+func parseWGConfig() (map[string]string, string, error) {
+	output, err := execCommand("wg", "show", "all", "dump")
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	lines := strings.Split(string(conf), "\n")
-	peers := make(map[string]struct{})
+	lines := strings.Split(output, "\n")
+	peers := make(map[string]string)
+	var interfaceIP string
+
 	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "PublicKey = ") {
-			key := strings.TrimPrefix(line, "PublicKey = ")
-			peers[key] = struct{}{}
-		}
-	}
-	return peers, nil
-}
-
-func parseWGConfIPs() (map[string]struct{}, error) {
-	conf, err := ioutil.ReadFile(wgConfPath)
-	if err != nil {
-		return nil, err
-	}
-
-	lines := strings.Split(string(conf), "\n")
-	usedIPs := make(map[string]struct{})
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "AllowedIPs = ") {
-			ipRange := strings.TrimPrefix(line, "AllowedIPs = ")
-			ipAddresses := strings.Split(ipRange, ",")
-			for _, ip := range ipAddresses {
-				ip = strings.TrimSpace(ip)
-				if net.ParseIP(ip) != nil {
-					usedIPs[ip] = struct{}{}
-				}
+		if strings.HasPrefix(line, "interface:") {
+			interfaceIP = strings.Fields(line)[1]
+		} else if strings.HasPrefix(line, "peer:") {
+			fields := strings.Fields(line)
+			if len(fields) > 1 {
+				publicKey := fields[1]
+				peers[publicKey] = ""
 			}
 		}
 	}
-	return usedIPs, nil
+
+	return peers, interfaceIP, nil
 }
 
-func getAvailableIP(usedIPs map[string]struct{}) (string, error) {
-	for i := ipStart; i <= ipEnd; i++ {
-		ip := fmt.Sprintf("%s.%d", ipRange, i)
-		if _, ok := usedIPs[ip]; !ok {
+// Function to get the next available IP address
+func getNextIP(existingIPs map[string]bool) (string, error) {
+	for i := 0; i < 255; i++ {
+		ip := fmt.Sprintf("%s%d", ipBase, i)
+		if !existingIPs[ip] {
 			return ip, nil
 		}
 	}
-	return "", fmt.Errorf("no available IP addresses in the range")
+	return "", fmt.Errorf("no available IP addresses")
 }
 
-func collectUsers() (map[string]interface{}, error) {
-	peers, err := parseWGConf()
+// Function to generate keys
+func generateKeys() (string, string, string, error) {
+	privateKey, err := execCommand("wg", "genkey")
 	if err != nil {
-		return nil, err
+		return "", "", "", err
 	}
+	privateKey = strings.TrimSpace(privateKey)
 
-	data := make(map[string]interface{})
-	for key := range peers {
-		data[key] = 0 // Placeholder for actual transfer amount
+	publicKey, err := execCommand("echo", privateKey, "|", "wg", "pubkey")
+	if err != nil {
+		return "", "", "", err
 	}
+	publicKey = strings.TrimSpace(publicKey)
 
-	return data, nil
+	presharedKey, err := execCommand("wg", "genpsk")
+	if err != nil {
+		return "", "", "", err
+	}
+	presharedKey = strings.TrimSpace(presharedKey)
+
+	return privateKey, publicKey, presharedKey, nil
 }
 
-func newClient() (map[string]string, error) {
-	// Generate keys
-	privKey, pubKey, err := generateKeys()
+// Function to read and parse the wg0.conf file
+func readWGConfig() (map[string]string, error) {
+	configFile, err := os.ReadFile(wgConfigPath)
 	if err != nil {
 		return nil, err
 	}
 
-	// Get available IP
-	usedIPs, err := parseWGConfIPs()
-	if err != nil {
-		return nil, err
-	}
-	ip, err := getAvailableIP(usedIPs)
-	if err != nil {
-		return nil, err
-	}
+	configLines := strings.Split(string(configFile), "\n")
+	peers := make(map[string]string)
 
-	// Append new client to wg0.conf
-	newClientConfig := fmt.Sprintf(`
-[Peer]
-PublicKey = %s
-PresharedKey = %s
-AllowedIPs = %s
-`, pubKey, privKey, ip)
-
-	conf, err := ioutil.ReadFile(wgConfPath)
-	if err != nil {
-		return nil, err
+	for _, line := range configLines {
+		if strings.HasPrefix(line, "PublicKey =") {
+			key := strings.TrimSpace(strings.Split(line, "=")[1])
+			peers[key] = ""
+		}
 	}
 
-	conf = append(conf, []byte(newClientConfig)...)
-	err = ioutil.WriteFile(wgConfPath, conf, 0644)
-	if err != nil {
-		return nil, err
-	}
-
-	// Reload WireGuard
-	_, err = runCommand("systemctl", "reload", "wg-quick@wg0")
-	if err != nil {
-		return nil, err
-	}
-
-	return map[string]string{
-		"privatekey": privKey,
-		"publickey":  pubKey,
-		"ip":         ip,
-	}, nil
+	return peers, nil
 }
 
-func deleteClient(key string) error {
-	conf, err := ioutil.ReadFile(wgConfPath)
+// Function to write updated WireGuard configuration
+func writeWGConfig(newClientPublicKey, newClientIP, newClientPrivateKey, newClientPresharedKey string) error {
+	configFile, err := os.ReadFile(wgConfigPath)
 	if err != nil {
 		return err
 	}
 
-	lines := strings.Split(string(conf), "\n")
-	var newLines []string
-	insidePeer := false
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "[Peer]") {
-			insidePeer = true
-		}
-		if insidePeer {
-			if strings.HasPrefix(line, "PublicKey = ") {
-				if strings.TrimPrefix(line, "PublicKey = ") == key {
-					insidePeer = false
-					continue
-				}
-			}
-		}
-		if !insidePeer {
-			newLines = append(newLines, line)
-		}
-	}
+	config := string(configFile)
+	config += fmt.Sprintf("\n[Peer]\nPublicKey = %s\nAllowedIPs = %s\nPresharedKey = %s\n", newClientPublicKey, newClientIP, newClientPresharedKey)
 
-	conf = []byte(strings.Join(newLines, "\n"))
-	err = ioutil.WriteFile(wgConfPath, conf, 0644)
+	err = os.WriteFile(wgConfigPath, []byte(config), 0644)
 	if err != nil {
 		return err
 	}
 
-	// Reload WireGuard
-	_, err = runCommand("systemctl", "reload", "wg-quick@wg0")
+	_, err = execCommand("systemctl", "reload", "wg-quick@wg0")
 	if err != nil {
 		return err
 	}
@@ -182,59 +128,133 @@ func deleteClient(key string) error {
 	return nil
 }
 
-func generateKeys() (string, string, error) {
-	// Generate a new key pair
-	_, priv := ed25519.GenerateKey(nil)
-	pub := priv.Public().(ed25519.PublicKey)
-	return fmt.Sprintf("%x", priv), fmt.Sprintf("%x", pub), nil
+func handleTransferCommand() error {
+	peers, _, err := parseWGConfig()
+	if err != nil {
+		return err
+	}
+
+	result := make(map[string]interface{})
+	for key := range peers {
+		result[key] = 0
+	}
+
+	jsonResult, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(string(jsonResult))
+	return nil
+}
+
+func handleNewClientCommand() error {
+	peers, ifaceIP, err := parseWGConfig()
+	if err != nil {
+		return err
+	}
+
+	existingIPs := make(map[string]bool)
+	for ip := range peers {
+		existingIPs[ip] = true
+	}
+
+	newClientIP, err := getNextIP(existingIPs)
+	if err != nil {
+		return err
+	}
+
+	privateKey, publicKey, presharedKey, err := generateKeys()
+	if err != nil {
+		return err
+	}
+
+	err = writeWGConfig(publicKey, newClientIP, privateKey, presharedKey)
+	if err != nil {
+		return err
+	}
+
+	result := map[string]string{
+		"privatekey":   privateKey,
+		"publickey":    publicKey,
+		"presharedkey": presharedKey,
+		"ip":           newClientIP,
+	}
+
+	jsonResult, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(string(jsonResult))
+	return nil
+}
+
+func handleDeleteCommand(key string) error {
+	configLines, err := os.ReadFile(wgConfigPath)
+	if err != nil {
+		return err
+	}
+
+	lines := strings.Split(string(configLines), "\n")
+	var newConfig []string
+
+	insidePeerSection := false
+	for _, line := range lines {
+		if strings.HasPrefix(line, "[Peer]") {
+			insidePeerSection = true
+		} else if strings.HasPrefix(line, "PublicKey =") && insidePeerSection {
+			if strings.TrimSpace(strings.Split(line, "=")[1]) == key {
+				insidePeerSection = false
+				continue
+			}
+		}
+		if !insidePeerSection || !strings.HasPrefix(line, "[Peer]") {
+			newConfig = append(newConfig, line)
+		}
+	}
+
+	err = os.WriteFile(wgConfigPath, []byte(strings.Join(newConfig, "\n")), 0644)
+	if err != nil {
+		return err
+	}
+
+	_, err = execCommand("systemctl", "reload", "wg-quick@wg0")
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: wgraven <command> [arguments]")
+		fmt.Println("Usage: wgraven <command> [options]")
 		os.Exit(1)
 	}
 
-	cmd := os.Args[1]
-	switch cmd {
+	switch os.Args[1] {
 	case "transfer":
-		users, err := collectUsers()
-		if err != nil {
-			fmt.Println("Error collecting users:", err)
+		if err := handleTransferCommand(); err != nil {
+			fmt.Println("Error:", err)
 			os.Exit(1)
 		}
-		data, err := json.Marshal(users)
-		if err != nil {
-			fmt.Println("Error marshaling JSON:", err)
-			os.Exit(1)
-		}
-		fmt.Println(string(data))
 	case "newclient":
-		keys, err := newClient()
-		if err != nil {
-			fmt.Println("Error creating new client:", err)
+		if err := handleNewClientCommand(); err != nil {
+			fmt.Println("Error:", err)
 			os.Exit(1)
 		}
-		data, err := json.Marshal(keys)
-		if err != nil {
-			fmt.Println("Error marshaling JSON:", err)
-			os.Exit(1)
-		}
-		fmt.Println(string(data))
 	case "delete":
 		if len(os.Args) < 3 {
 			fmt.Println("Usage: wgraven delete <key>")
 			os.Exit(1)
 		}
-		key := os.Args[2]
-		err := deleteClient(key)
-		if err != nil {
-			fmt.Println("Error deleting client:", err)
+		if err := handleDeleteCommand(os.Args[2]); err != nil {
+			fmt.Println("Error:", err)
 			os.Exit(1)
 		}
-		fmt.Println("Client deleted successfully.")
 	default:
-		fmt.Println("Unknown command:", cmd)
+		fmt.Println("Unknown command:", os.Args[1])
 		os.Exit(1)
 	}
 }
