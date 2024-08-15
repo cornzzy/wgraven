@@ -1,11 +1,12 @@
+// wgraven.go
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 )
 
@@ -45,20 +46,28 @@ func handleTransfer() {
 	}
 
 	lines := strings.Split(strings.TrimSpace(output), "\n")
-	transferMap := make(map[string]int64)
+	transferMap := make(map[string]map[string]int64)
 
 	for _, line := range lines {
 		parts := strings.Fields(line)
-		if len(parts) != 2 {
+		if len(parts) != 3 {
 			continue
 		}
 		key := parts[0]
-		value, err := strconv.ParseInt(parts[1], 10, 64)
+		upload, err := parseTransferValue(parts[1])
 		if err != nil {
-			fmt.Println("Error parsing transfer value:", err)
+			fmt.Println("Error parsing upload value:", err)
 			return
 		}
-		transferMap[key] = value
+		download, err := parseTransferValue(parts[2])
+		if err != nil {
+			fmt.Println("Error parsing download value:", err)
+			return
+		}
+		transferMap[key] = map[string]int64{
+			"upload":   upload,
+			"download": download,
+		}
 	}
 
 	jsonData, err := json.Marshal(transferMap)
@@ -67,6 +76,10 @@ func handleTransfer() {
 		return
 	}
 	fmt.Println(string(jsonData))
+}
+
+func parseTransferValue(value string) (int64, error) {
+	return strconv.ParseInt(value, 10, 64)
 }
 
 func handleNewClient() {
