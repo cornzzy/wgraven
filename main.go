@@ -50,10 +50,8 @@ func parseWGConfig() (map[string]string, error) {
 // Function to get the next available IP address
 func getNextIP(existingIPs map[string]bool, isIPv6 bool) (string, error) {
 	ipBase := ipv4Base
-	ipPrefix := "0.0.0.0/32"
 	if isIPv6 {
 		ipBase = ipv6Base
-		ipPrefix = "0:0:0:0:0:0:0:0/128"
 	}
 
 	for i := 0; i < 255; i++ {
