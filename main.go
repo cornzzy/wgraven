@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
-	"time"
 )
 
 const (
@@ -26,20 +24,17 @@ func execCommand(name string, args ...string) (string, error) {
 }
 
 // Function to parse WireGuard configuration
-func parseWGConfig() (map[string]string, string, error) {
+func parseWGConfig() (map[string]string, error) {
 	output, err := execCommand("wg", "show", "all", "dump")
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
 	lines := strings.Split(output, "\n")
 	peers := make(map[string]string)
-	var interfaceIP string
 
 	for _, line := range lines {
-		if strings.HasPrefix(line, "interface:") {
-			interfaceIP = strings.Fields(line)[1]
-		} else if strings.HasPrefix(line, "peer:") {
+		if strings.HasPrefix(line, "peer:") {
 			fields := strings.Fields(line)
 			if len(fields) > 1 {
 				publicKey := fields[1]
@@ -48,7 +43,7 @@ func parseWGConfig() (map[string]string, string, error) {
 		}
 	}
 
-	return peers, interfaceIP, nil
+	return peers, nil
 }
 
 // Function to get the next available IP address
@@ -129,7 +124,7 @@ func writeWGConfig(newClientPublicKey, newClientIP, newClientPrivateKey, newClie
 }
 
 func handleTransferCommand() error {
-	peers, _, err := parseWGConfig()
+	peers, err := parseWGConfig()
 	if err != nil {
 		return err
 	}
@@ -149,7 +144,7 @@ func handleTransferCommand() error {
 }
 
 func handleNewClientCommand() error {
-	peers, ifaceIP, err := parseWGConfig()
+	peers, err := readWGConfig()
 	if err != nil {
 		return err
 	}
