@@ -2,11 +2,11 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -54,12 +54,12 @@ func handleTransfer() {
 			continue
 		}
 		key := parts[0]
-		upload, err := parseTransferValue(parts[1])
+		upload, err := strconv.ParseInt(parts[1], 10, 64)
 		if err != nil {
 			fmt.Println("Error parsing upload value:", err)
 			return
 		}
-		download, err := parseTransferValue(parts[2])
+		download, err := strconv.ParseInt(parts[2], 10, 64)
 		if err != nil {
 			fmt.Println("Error parsing download value:", err)
 			return
@@ -76,10 +76,6 @@ func handleTransfer() {
 		return
 	}
 	fmt.Println(string(jsonData))
-}
-
-func parseTransferValue(value string) (int64, error) {
-	return strconv.ParseInt(value, 10, 64)
 }
 
 func handleNewClient() {
