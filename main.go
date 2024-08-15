@@ -4,6 +4,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"strconv"
@@ -123,20 +124,36 @@ func handleNewClient() {
 		fmt.Println("Error generating private key:", err)
 		return
 	}
-	publicKey, err := runCommand("wg", "pubkey")
+	privateKey = strings.TrimSpace(privateKey)
+
+	// Write private key to temp file
+	privKeyFile, err := ioutil.TempFile("", "wg-private-key-")
+	if err != nil {
+		fmt.Println("Error creating temp file for private key:", err)
+		return
+	}
+	defer os.Remove(privKeyFile.Name())
+	if _, err := privKeyFile.WriteString(privateKey); err != nil {
+		fmt.Println("Error writing private key to temp file:", err)
+		return
+	}
+	privKeyFile.Close()
+
+	// Generate public key from private key
+	publicKeyOutput, err := runCommand("wg", "pubkey", "<", privKeyFile.Name())
 	if err != nil {
 		fmt.Println("Error generating public key:", err)
 		return
 	}
-	presharedKey, err := runCommand("wg", "genpsk")
+	publicKey := strings.TrimSpace(publicKeyOutput)
+
+	// Generate preshared key
+	presharedKeyOutput, err := runCommand("wg", "genpsk")
 	if err != nil {
 		fmt.Println("Error generating preshared key:", err)
 		return
 	}
-
-	clientPrivateKey := strings.TrimSpace(privateKey)
-	clientPublicKey := strings.TrimSpace(publicKey)
-	clientPresharedKey := strings.TrimSpace(presharedKey)
+	presharedKey := strings.TrimSpace(presharedKeyOutput)
 
 	// Update wg0.conf
 	conf := fmt.Sprintf(`
@@ -144,7 +161,7 @@ func handleNewClient() {
 PublicKey = %s
 PresharedKey = %s
 AllowedIPs = %s, %s
-`, clientPublicKey, clientPresharedKey, newIP+"/32", newIPv6+"/128")
+`, publicKey, presharedKey, newIP+"/32", newIPv6+"/128")
 
 	confFile, err := os.OpenFile("/etc/wireguard/wg0.conf", os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
@@ -166,9 +183,9 @@ AllowedIPs = %s, %s
 
 	// Return JSON
 	clientData := map[string]string{
-		"privatekey":   clientPrivateKey,
-		"publickey":    clientPublicKey,
-		"presharedkey": clientPresharedKey,
+		"privatekey":   privateKey,
+		"publickey":    publicKey,
+		"presharedkey": presharedKey,
 		"ip":           newIP,
 		"ipv6":         newIPv6,
 	}
