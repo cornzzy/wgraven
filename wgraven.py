@@ -1,12 +1,11 @@
 import sys
 import subprocess
 import json
-import re
-from cidr import IPNetwork, IPRange
+import ipaddress
 
 # Define the subnets for IPv4 and IPv6
-ipv4_subnet = IPNetwork('10.25.0.0/16')
-ipv6_subnet = IPNetwork('fd42:42:42::/112')
+ipv4_subnet = ipaddress.ip_network('10.25.0.0/16')
+ipv6_subnet = ipaddress.ip_network('fd42:42:42::/112')
 
 def get_next_available_ip(network):
     used_ips = set()
@@ -21,11 +20,11 @@ def get_next_available_ip(network):
             ips = parts[1:]
             for ip in ips:
                 if ':' in ip:  # IPv6
-                    used_ips.add(IPNetwork(ip).ip)
+                    used_ips.add(ipaddress.ip_address(ip))
                 else:  # IPv4
-                    used_ips.add(IPNetwork(ip).ip)
+                    used_ips.add(ipaddress.ip_address(ip))
     
-    for ip in network:
+    for ip in network.hosts():
         if ip not in used_ips:
             return ip
     
