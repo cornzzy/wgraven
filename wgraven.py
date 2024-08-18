@@ -19,10 +19,13 @@ def get_next_available_ip(network):
         if len(parts) > 1:
             ips = parts[1:]
             for ip in ips:
-                if ':' in ip:  # IPv6
-                    used_ips.add(ipaddress.ip_address(ip))
-                else:  # IPv4
-                    used_ips.add(ipaddress.ip_address(ip))
+                try:
+                    if ':' in ip:  # IPv6
+                        used_ips.add(ipaddress.ip_address(ip))
+                    else:  # IPv4
+                        used_ips.add(ipaddress.ip_address(ip))
+                except ValueError:
+                    print(f"Warning: Skipping invalid IP address {ip}")
     
     for ip in network.hosts():
         if ip not in used_ips:
@@ -38,8 +41,12 @@ def generate_keys():
     return private_key, public_key, preshared_key
 
 def add_peer():
-    ipv4_address = str(get_next_available_ip(ipv4_subnet))
-    ipv6_address = str(get_next_available_ip(ipv6_subnet))
+    try:
+        ipv4_address = str(get_next_available_ip(ipv4_subnet))
+        ipv6_address = str(get_next_available_ip(ipv6_subnet))
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
     
     private_key, public_key, preshared_key = generate_keys()
     
