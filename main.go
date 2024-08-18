@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
 	"fmt"
 	"net"
 	"os"
@@ -14,43 +14,39 @@ const (
 	configFile  = "/etc/wireguard/wg0.conf"
 	ipv4Subnet  = "10.25.0.0/16"
 	ipv6Subnet  = "fd42:42:42::0/112"
+	serverIPv4  = "10.25.0.1/32"
+	serverIPv6  = "fd42:42:42::1/128"
 )
 
-func findNextIP(usedIPs []string, subnet string) (string, error) {
-	_, ipnet, err := net.ParseCIDR(subnet)
+func findNextIP(ipRange string, usedIPs []string, skipIP string) (string, error) {
+	ip, ipNet, err := net.ParseCIDR(ipRange)
 	if err != nil {
 		return "", err
 	}
 
-	ip := ipnet.IP
-	for {
-		ip = incrementIP(ip)
-		if !ipnet.Contains(ip) {
-			break
-		}
+	for ip := ip.Mask(ipNet.Mask); ipNet.Contains(ip); incrementIP(ip) {
 		ipStr := ip.String()
-		if !contains(usedIPs, ipStr) {
-			return ipStr, nil
+		if ipStr == skipIP || contains(usedIPs, ipStr) {
+			continue
 		}
+		return ipStr, nil
 	}
 
-	return "", fmt.Errorf("no available IPs in subnet %s", subnet)
+	return "", fmt.Errorf("no available IPs in range %s", ipRange)
 }
 
-func incrementIP(ip net.IP) net.IP {
-	ip = ip.To16()
+func incrementIP(ip net.IP) {
 	for j := len(ip) - 1; j >= 0; j-- {
 		ip[j]++
-		if ip[j] != 0 {
+		if ip[j] > 0 {
 			break
 		}
 	}
-	return ip
 }
 
-func contains(s []string, str string) bool {
-	for _, v := range s {
-		if v == str {
+func contains(s []string, e string) bool {
+	for _, a := range s {
+		if a == e {
 			return true
 		}
 	}
@@ -64,62 +60,87 @@ func getUsedIPs() ([]string, []string, error) {
 		return nil, nil, err
 	}
 
-	ipv4s := []string{}
-	ipv6s := []string{}
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
-	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) >= 2 {
-			ipv4 := strings.Split(fields[1], "/")[0]
-			ipv6 := strings.Split(fields[2], "/")[0]
-			ipv4s = append(ipv4s, ipv4)
-			ipv6s = append(ipv6s, ipv6)
+	var usedIPv4s, usedIPv6s []string
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	for _, line := range lines {
+		parts := strings.Fields(line)
+		if len(parts) >= 2 {
+			usedIPv4s = append(usedIPv4s, strings.Split(parts[1], "/")[0])
+			if len(parts) >= 3 {
+				usedIPv6s = append(usedIPv6s, strings.Split(parts[2], "/")[0])
+			}
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, nil, err
-	}
-	return ipv4s, ipv6s, nil
+
+	return usedIPv4s, usedIPv6s, nil
 }
 
 func addPeer() error {
-	ipv4s, ipv6s, err := getUsedIPs()
+	usedIPv4s, usedIPv6s, err := getUsedIPs()
 	if err != nil {
 		return err
 	}
 
-	nextIPv4, err := findNextIP(ipv4s, ipv4Subnet)
+	nextIPv4, err := findNextIP(ipv4Subnet, usedIPv4s, "10.25.0.1")
 	if err != nil {
 		return err
 	}
 
-	nextIPv6, err := findNextIP(ipv6s, ipv6Subnet)
+	nextIPv6, err := findNextIP(ipv6Subnet, usedIPv6s, "fd42:42:42::1")
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("Next available IPv4: %s\n", nextIPv4)
-	fmt.Printf("Next available IPv6: %s\n", nextIPv6)
+	fmt.Printf("Next IPv4: %s/32, Next IPv6: %s/128\n", nextIPv4, nextIPv6)
 
-	// Add your logic to generate peer configuration and add it to WireGuard here.
-	// For now, let's just print the IPs for demo purposes.
+	// Add the peer to wg0.conf (this step requires admin privileges)
+	// This is a placeholder. In a real application, you'd need to use a keypair generator
+	// and dynamically build the peer configuration.
+	peerConfig := fmt.Sprintf(`
+[Peer]
+# Add your new peer configuration here
+AllowedIPs = %s/32, %s/128
+`, nextIPv4, nextIPv6)
 
+	cmd := exec.Command("wg", "set", wgInterface, "peer", "NEW_PUBLIC_KEY", "allowed-ips", fmt.Sprintf("%s/32", nextIPv4), fmt.Sprintf("%s/128", nextIPv6))
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	cmd = exec.Command("wg-quick", "strip", wgInterface)
+	cmd.Stdin = bytes.NewBufferString(peerConfig)
+	cmd.Stdout = os.Stdout
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	cmd = exec.Command("wg", "syncconf", wgInterface, fmt.Sprintf("<(wg-quick strip %s)", wgInterface))
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	fmt.Println("Peer added successfully.")
 	return nil
 }
 
 func deletePeer(publicKey string) error {
 	cmd := exec.Command("wg", "set", wgInterface, "peer", publicKey, "remove")
-	err := cmd.Run()
-	if err != nil {
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	cmd = exec.Command("wg-quick", "strip", wgInterface)
+	cmd.Stdout = os.Stdout
+	if err := cmd.Run(); err != nil {
 		return err
 	}
 
 	cmd = exec.Command("wg", "syncconf", wgInterface, fmt.Sprintf("<(wg-quick strip %s)", wgInterface))
-	err = cmd.Run()
-	if err != nil {
+	if err := cmd.Run(); err != nil {
 		return err
 	}
 
+	fmt.Println("Peer deleted successfully.")
 	return nil
 }
 
