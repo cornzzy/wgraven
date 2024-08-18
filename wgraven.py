@@ -25,7 +25,7 @@ def get_next_available_ip(network):
                     else:  # IPv4
                         used_ips.add(ipaddress.ip_address(ip))
                 except ValueError:
-                    print(f"Warning: Skipping invalid IP address {ip}")
+                    continue
     
     for ip in network.hosts():
         if ip not in used_ips:
@@ -45,15 +45,19 @@ def add_peer():
         ipv4_address = str(get_next_available_ip(ipv4_subnet))
         ipv6_address = str(get_next_available_ip(ipv6_subnet))
     except ValueError as e:
-        print(f"Error: {e}")
+        print(json.dumps({"error": str(e)}))
         sys.exit(1)
     
     private_key, public_key, preshared_key = generate_keys()
     
-    # Add the peer
-    subprocess.run(['wg', 'set', 'wg0', 'peer', public_key, 'preshared-key', preshared_key,
-                    'endpoint', 'your-endpoint-ip:port', 'allowed-ips', f'{ipv4_address}/32,{ipv6_address}/128',
-                    'persistent-keepalive', '25'])
+    # Update WireGuard configuration to add the peer
+    try:
+        subprocess.run(['wg', 'set', 'wg0', 'peer', public_key, 'preshared-key', preshared_key,
+                        'endpoint', 'your-endpoint-ip:port', 'allowed-ips', f'{ipv4_address}/32,{ipv6_address}/128',
+                        'persistent-keepalive', '25'], check=True)
+    except subprocess.CalledProcessError:
+        print(json.dumps({"error": "Failed to add peer to WireGuard configuration."}))
+        sys.exit(1)
     
     response = {
         "privatekey": private_key,
@@ -62,16 +66,20 @@ def add_peer():
         "publickey": public_key
     }
     
-    print(json.dumps(response, indent=4))
+    print(json.dumps(response))
 
 def delete_peer(public_key):
-    # Remove the peer
-    subprocess.run(['wg', 'set', 'wg0', 'peer', public_key, 'remove'])
-    print(f"Peer with public key {public_key} removed.")
+    # Remove the peer from WireGuard configuration
+    try:
+        subprocess.run(['wg', 'set', 'wg0', 'peer', public_key, 'remove'], check=True)
+        print(json.dumps({"success": f"Peer with public key {public_key} removed."}))
+    except subprocess.CalledProcessError:
+        print(json.dumps({"error": "Failed to remove peer from WireGuard configuration."}))
+        sys.exit(1)
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: wgraven <command> [<publickey>]")
+        print(json.dumps({"error": "Usage: wgraven <command> [<publickey>]"}))
         sys.exit(1)
     
     command = sys.argv[1]
@@ -80,12 +88,12 @@ def main():
         add_peer()
     elif command == 'delete':
         if len(sys.argv) != 3:
-            print("Usage: wgraven delete <publickey>")
+            print(json.dumps({"error": "Usage: wgraven delete <publickey>"}))
             sys.exit(1)
         public_key = sys.argv[2]
         delete_peer(public_key)
     else:
-        print("Unknown command:", command)
+        print(json.dumps({"error": "Unknown command: " + command}))
         sys.exit(1)
 
 if __name__ == '__main__':
