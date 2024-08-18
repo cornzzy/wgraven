@@ -3,14 +3,12 @@ package main
 import (
     "encoding/json"
     "fmt"
-    "io/ioutil"
     "os"
     "os/exec"
     "strings"
     "net"
     "crypto/rand"
     "encoding/base64"
-    "github.com/google/uuid"
 )
 
 const (
