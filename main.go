@@ -9,8 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-
-	"golang.org/x/net/ipv6"
 )
 
 const (
