@@ -8,7 +8,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"strings"
 
 	"github.com/urfave/cli/v2"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
@@ -53,11 +52,6 @@ func main() {
 }
 
 func addPeer(ip string) error {
-	privateKey, err := ioutil.ReadFile(privateKeyFile)
-	if err != nil {
-		return fmt.Errorf("failed to read private key: %w", err)
-	}
-
 	peerPrivateKey, err := wgtypes.GeneratePrivateKey()
 	if err != nil {
 		return fmt.Errorf("failed to generate private key: %w", err)
