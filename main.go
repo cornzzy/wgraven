@@ -75,14 +75,14 @@ func main() {
 			},
 			{
 				Name:   "disable",
-				Usage:  "Disable a peer (set allowed IPs to empty)",
+				Usage:  "Disable a peer by setting its allowed IPs to an empty string",
 				ArgsUsage: "<peerpublickey>",
 				Action: func(c *cli.Context) error {
 					if c.Args().Len() != 1 {
 						return fmt.Errorf("missing peer public key")
 					}
 					peerPublicKey := c.Args().Get(0)
-					if err := updatePeerIPs(peerPublicKey, ""); err != nil {
+					if err := disablePeer(peerPublicKey); err != nil {
 						fmt.Println(`{"error": "` + err.Error() + `"}`)
 						return nil
 					}
@@ -92,25 +92,23 @@ func main() {
 			},
 			{
 				Name:   "enable",
-				Usage:  "Enable a peer (set allowed IPs)",
-				ArgsUsage: "<peerpublickey>",
+				Usage:  "Enable a peer by updating its allowed IPs",
 				Flags: []cli.Flag{
 					&cli.StringFlag{
+						Name:     "publickey",
+						Usage:    "Public key of the peer to enable",
+						Required: true,
+					},
+					&cli.StringFlag{
 						Name:     "ip",
-						Usage:    "IP address to assign to the peer (e.g., '10.8.0.2/32,fd7f:8d4e:227f::2/128')",
+						Usage:    "IP address to assign to the peer (e.g., '10.8.0.2/32,fd42:42:42::2/128')",
 						Required: true,
 					},
 				},
 				Action: func(c *cli.Context) error {
-					if c.Args().Len() != 1 {
-						return fmt.Errorf("missing peer public key")
-					}
-					peerPublicKey := c.Args().Get(0)
+					publicKey := c.String("publickey")
 					ip := c.String("ip")
-					if ip == "" {
-						return fmt.Errorf("required flag 'ip' not set")
-					}
-					if err := updatePeerIPs(peerPublicKey, ip); err != nil {
+					if err := enablePeer(publicKey, ip); err != nil {
 						fmt.Println(`{"error": "` + err.Error() + `"}`)
 						return nil
 					}
@@ -189,25 +187,55 @@ func deletePeer(peerPublicKey string) error {
 	return nil
 }
 
-func updatePeerIPs(peerPublicKey, ips string) error {
+func disablePeer(peerPublicKey string) error {
 	// Read current config
 	config, err := os.ReadFile(wgConfigFile)
 	if err != nil {
 		return fmt.Errorf("failed to read wg0.conf: %w", err)
 	}
 
-	// Update peer block
-	updatedConfig := updatePeerIPsInConfig(string(config), peerPublicKey, ips)
+	// Remove the peer's allowed IPs
+	updatedConfig, found := clearAllowedIPsFromConfig(string(config), peerPublicKey)
+	if !found {
+		return fmt.Errorf("peer with public key %s not found", peerPublicKey)
+	}
 
 	// Write updated config
 	if err := os.WriteFile(wgConfigFile, []byte(updatedConfig), 0600); err != nil {
 		return fmt.Errorf("failed to write updated wg0.conf: %w", err)
 	}
 
-	// Update peer using `wg` command
-	err = exec.Command("wg", "set", "wg0", "peer", peerPublicKey, "allowed-ips", ips).Run()
+	// Apply changes using `wg` command
+	err = exec.Command("wg", "set", "wg0", "peer", peerPublicKey, "allowed-ips", "").Run()
 	if err != nil {
-		return fmt.Errorf("failed to update peer: %w", err)
+		return fmt.Errorf("failed to set peer's allowed IPs to empty: %w", err)
+	}
+
+	return nil
+}
+
+func enablePeer(peerPublicKey, ip string) error {
+	// Read current config
+	config, err := os.ReadFile(wgConfigFile)
+	if err != nil {
+		return fmt.Errorf("failed to read wg0.conf: %w", err)
+	}
+
+	// Update the peer's allowed IPs
+	updatedConfig, found := updateAllowedIPsInConfig(string(config), peerPublicKey, ip)
+	if !found {
+		return fmt.Errorf("peer with public key %s not found", peerPublicKey)
+	}
+
+	// Write updated config
+	if err := os.WriteFile(wgConfigFile, []byte(updatedConfig), 0600); err != nil {
+		return fmt.Errorf("failed to write updated wg0.conf: %w", err)
+	}
+
+	// Apply changes using `wg` command
+	err = exec.Command("wg", "set", "wg0", "peer", peerPublicKey, "allowed-ips", ip).Run()
+	if err != nil {
+		return fmt.Errorf("failed to set peer's allowed IPs: %w", err)
 	}
 
 	return nil
@@ -236,11 +264,11 @@ func removePeerFromConfig(config, publicKey string) string {
 	return strings.Join(updatedLines, "\n")
 }
 
-func updatePeerIPsInConfig(config, publicKey, ips string) string {
+func clearAllowedIPsFromConfig(config, publicKey string) (string, bool) {
 	lines := strings.Split(config, "\n")
 	var updatedLines []string
 	inPeerBlock := false
-	updated := false
+	found := false
 
 	for _, line := range lines {
 		if strings.HasPrefix(line, "[Peer]") {
@@ -248,32 +276,50 @@ func updatePeerIPsInConfig(config, publicKey, ips string) string {
 		}
 
 		if inPeerBlock && strings.HasPrefix(line, "PublicKey") && strings.Contains(line, publicKey) {
-			// Add AllowedIPs line after PublicKey line
-			updatedLines = append(updatedLines, line)
-			updatedLines = append(updatedLines, "AllowedIPs = "+ips)
-			updated = true
+			found = true
+		}
+
+		if inPeerBlock && strings.HasPrefix(line, "AllowedIPs") && found {
+			// Skip the AllowedIPs line
 			continue
+		}
+
+		if !inPeerBlock || (found && !strings.HasPrefix(line, "AllowedIPs")) {
+			updatedLines = append(updatedLines, line)
+		}
+	}
+
+	return strings.Join(updatedLines, "\n"), found
+}
+
+func updateAllowedIPsInConfig(config, publicKey, ip string) (string, bool) {
+	lines := strings.Split(config, "\n")
+	var updatedLines []string
+	inPeerBlock := false
+	found := false
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "[Peer]") {
+			inPeerBlock = true
 		}
 
 		if inPeerBlock && strings.HasPrefix(line, "PublicKey") && strings.Contains(line, publicKey) {
-			// Skip the existing AllowedIPs line
+			found = true
+		}
+
+		if inPeerBlock && strings.HasPrefix(line, "AllowedIPs") && found {
+			// Update the AllowedIPs line
+			updatedLines = append(updatedLines, fmt.Sprintf("AllowedIPs = %s", ip))
+			inPeerBlock = false
 			continue
 		}
 
-		if !inPeerBlock {
+		if !inPeerBlock || (found && !strings.HasPrefix(line, "AllowedIPs")) {
 			updatedLines = append(updatedLines, line)
 		}
 	}
 
-	if !updated {
-		// Add peer block if it doesn't exist
-		updatedLines = append(updatedLines, fmt.Sprintf(`
-[Peer]
-PublicKey = %s
-AllowedIPs = %s`, publicKey, ips))
-	}
-
-	return strings.Join(updatedLines, "\n")
+	return strings.Join(updatedLines, "\n"), found
 }
 
 func generatePSK() (string, error) {
