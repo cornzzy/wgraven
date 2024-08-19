@@ -1,96 +1,69 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/base64"
+	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 
-	"github.com/urfave/cli/v2"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-const (
-	wgConfigFile  = "/etc/wireguard/wg0.conf"
-	privateKeyFile = "/etc/wireguard/private.key"
-	publicKeyFile  = "/etc/wireguard/public.key"
-)
+type output struct {
+	PrivateKey   string `json:"privateKey"`
+	Address      string `json:"address"`
+	PresharedKey string `json:"presharedKey"`
+}
 
 func main() {
-	app := &cli.App{
-		Name:  "wgraven",
-		Usage: "Manage WireGuard peers",
-		Commands: []*cli.Command{
-			{
-				Name:   "add",
-				Usage:  "Add a new peer to WireGuard",
-				Flags: []cli.Flag{
-					&cli.StringFlag{
-						Name:     "ip",
-						Usage:    "IP address to assign to the new peer (e.g., '10.8.0.2/32,fd42:42:42::2/128')",
-						Required: true,
-					},
-				},
-				Action: func(c *cli.Context) error {
-					ip := c.String("ip")
-					if err := addPeer(ip); err != nil {
-						return err
-					}
-					return nil
-				},
-			},
-		},
+	ip := flag.String("ip", "", "IP address for the new peer")
+	flag.Parse()
+
+	if *ip == "" {
+		log.Fatalf("IP address must be specified using --ip")
 	}
 
-	err := app.Run(os.Args)
+	// Generate a new private key
+	privateKey, err := wgtypes.GeneratePrivateKey()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to generate private key: %v", err)
 	}
-}
+	publicKey := privateKey.PublicKey()
 
-func addPeer(ip string) error {
-	peerPrivateKey, err := wgtypes.GeneratePrivateKey()
+	// Generate a new preshared key
+	presharedKey, err := wgtypes.GenerateKey()
 	if err != nil {
-		return fmt.Errorf("failed to generate private key: %w", err)
+		log.Fatalf("Failed to generate preshared key: %v", err)
 	}
-	peerPublicKey := peerPrivateKey.PublicKey()
 
-	preSharedKey, err := generatePSK()
+	// Add the peer using the wg command-line tool
+	cmd := exec.Command("wg", "set", "wg0", "peer", publicKey.String(), "allowed-ips", *ip)
+	if err := cmd.Run(); err != nil {
+		log.Fatalf("Failed to add peer: %v", err)
+	}
+
+	// Append the new peer to the wg0.conf file
+	wg0conf := "/etc/wireguard/wg0.conf"
+	confEntry := fmt.Sprintf("\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = %s\n", publicKey.String(), presharedKey.String(), *ip)
+	if err := appendToFile(wg0conf, confEntry); err != nil {
+		log.Fatalf("Failed to append to wg0.conf: %v", err)
+	}
+
+	// Output JSON data
+	out := output{
+		PrivateKey:   privateKey.String(),
+		Address:      *ip,
+		PresharedKey: presharedKey.String(),
+	}
+
+	jsonOutput, err := json.Marshal(out)
 	if err != nil {
-		return fmt.Errorf("failed to generate pre-shared key: %w", err)
+		log.Fatalf("Failed to generate JSON output: %v", err)
 	}
 
-	// Add the new peer to wg0.conf
-	peerConfig := fmt.Sprintf(`
-[Peer]
-PublicKey = %s
-PresharedKey = %s
-AllowedIPs = %s
-`, peerPublicKey.String(), preSharedKey, ip)
-
-	if err := appendToFile(wgConfigFile, peerConfig); err != nil {
-		return fmt.Errorf("failed to append peer config to wg0.conf: %w", err)
-	}
-
-	// Apply the new peer configuration using `wg` command
-	err = exec.Command("wg", "set", "wg0", "peer", peerPublicKey.String(), "allowed-ips", ip).Run()
-	if err != nil {
-		return fmt.Errorf("failed to set peer: %w", err)
-	}
-
-	fmt.Println("Peer added successfully!")
-	return nil
-}
-
-func generatePSK() (string, error) {
-	key := make([]byte, wgtypes.KeyLen)
-	_, err := rand.Read(key)
-	if err != nil {
-		return "", fmt.Errorf("failed to generate pre-shared key: %w", err)
-	}
-	return base64.StdEncoding.EncodeToString(key), nil
+	fmt.Println(string(jsonOutput))
 }
 
 func appendToFile(filename, text string) error {
