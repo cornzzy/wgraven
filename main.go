@@ -8,19 +8,21 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/urfave/cli/v2"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 const (
-	wgConfigFile  = "/etc/wireguard/wg0.conf"
+	wgConfigFile = "/etc/wireguard/wg0.conf"
 )
 
 type PeerInfo struct {
 	PrivateKey   string `json:"privateKey"`
 	Address      string `json:"address"`
 	PresharedKey string `json:"presharedKey"`
+	PublicKey    string `json:"publicKey"`
 }
 
 func main() {
@@ -51,6 +53,23 @@ func main() {
 						return fmt.Errorf("failed to marshal peer info: %w", err)
 					}
 					fmt.Println(string(peerInfoJSON))
+					return nil
+				},
+			},
+			{
+				Name:   "delete",
+				Usage:  "Delete a peer from WireGuard",
+				ArgsUsage: "<peerpublickey>",
+				Action: func(c *cli.Context) error {
+					if c.Args().Len() != 1 {
+						return fmt.Errorf("missing peer public key")
+					}
+					peerPublicKey := c.Args().Get(0)
+					if err := deletePeer(peerPublicKey); err != nil {
+						fmt.Println(`{"error": "` + err.Error() + `"}`)
+						return nil
+					}
+					fmt.Println(`{"status": "peer deleted successfully"}`)
 					return nil
 				},
 			},
@@ -97,7 +116,55 @@ AllowedIPs = %s
 		PrivateKey:   peerPrivateKey.String(),
 		Address:      ip,
 		PresharedKey: preSharedKey,
+		PublicKey:    peerPublicKey.String(),
 	}, nil
+}
+
+func deletePeer(peerPublicKey string) error {
+	// Read current config
+	config, err := os.ReadFile(wgConfigFile)
+	if err != nil {
+		return fmt.Errorf("failed to read wg0.conf: %w", err)
+	}
+
+	// Remove peer block
+	updatedConfig := removePeerFromConfig(string(config), peerPublicKey)
+
+	// Write updated config
+	if err := os.WriteFile(wgConfigFile, []byte(updatedConfig), 0600); err != nil {
+		return fmt.Errorf("failed to write updated wg0.conf: %w", err)
+	}
+
+	// Remove peer using `wg` command
+	err = exec.Command("wg", "set", "wg0", "peer", peerPublicKey, "remove").Run()
+	if err != nil {
+		return fmt.Errorf("failed to remove peer: %w", err)
+	}
+
+	return nil
+}
+
+func removePeerFromConfig(config, publicKey string) string {
+	lines := strings.Split(config, "\n")
+	var updatedLines []string
+	inPeerBlock := false
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "[Peer]") {
+			inPeerBlock = true
+		}
+
+		if inPeerBlock && strings.HasPrefix(line, "PublicKey") && strings.Contains(line, publicKey) {
+			inPeerBlock = false
+			continue
+		}
+
+		if !inPeerBlock {
+			updatedLines = append(updatedLines, line)
+		}
+	}
+
+	return strings.Join(updatedLines, "\n")
 }
 
 func generatePSK() (string, error) {
