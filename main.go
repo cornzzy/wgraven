@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -14,8 +15,13 @@ import (
 
 const (
 	wgConfigFile  = "/etc/wireguard/wg0.conf"
-	privateKeyFile = "/etc/wireguard/private.key"
 )
+
+type PeerInfo struct {
+	PrivateKey   string `json:"privateKey"`
+	Address      string `json:"address"`
+	PresharedKey string `json:"presharedKey"`
+}
 
 func main() {
 	app := &cli.App{
@@ -34,9 +40,17 @@ func main() {
 				},
 				Action: func(c *cli.Context) error {
 					ip := c.String("ip")
-					if err := addPeer(ip); err != nil {
-						return err
+					peerInfo, err := addPeer(ip)
+					if err != nil {
+						fmt.Println(`{"error": "` + err.Error() + `"}`)
+						return nil
 					}
+					// Output peer info as JSON
+					peerInfoJSON, err := json.Marshal(peerInfo)
+					if err != nil {
+						return fmt.Errorf("failed to marshal peer info: %w", err)
+					}
+					fmt.Println(string(peerInfoJSON))
 					return nil
 				},
 			},
@@ -49,16 +63,16 @@ func main() {
 	}
 }
 
-func addPeer(ip string) error {
+func addPeer(ip string) (*PeerInfo, error) {
 	peerPrivateKey, err := wgtypes.GeneratePrivateKey()
 	if err != nil {
-		return fmt.Errorf("failed to generate private key: %w", err)
+		return nil, fmt.Errorf("failed to generate private key: %w", err)
 	}
 	peerPublicKey := peerPrivateKey.PublicKey()
 
 	preSharedKey, err := generatePSK()
 	if err != nil {
-		return fmt.Errorf("failed to generate pre-shared key: %w", err)
+		return nil, fmt.Errorf("failed to generate pre-shared key: %w", err)
 	}
 
 	// Add the new peer to wg0.conf
@@ -70,17 +84,20 @@ AllowedIPs = %s
 `, peerPublicKey.String(), preSharedKey, ip)
 
 	if err := appendToFile(wgConfigFile, peerConfig); err != nil {
-		return fmt.Errorf("failed to append peer config to wg0.conf: %w", err)
+		return nil, fmt.Errorf("failed to append peer config to wg0.conf: %w", err)
 	}
 
 	// Apply the new peer configuration using `wg` command
 	err = exec.Command("wg", "set", "wg0", "peer", peerPublicKey.String(), "allowed-ips", ip).Run()
 	if err != nil {
-		return fmt.Errorf("failed to set peer: %w", err)
+		return nil, fmt.Errorf("failed to set peer: %w", err)
 	}
 
-	fmt.Println("Peer added successfully!")
-	return nil
+	return &PeerInfo{
+		PrivateKey:   peerPrivateKey.String(),
+		Address:      ip,
+		PresharedKey: preSharedKey,
+	}, nil
 }
 
 func generatePSK() (string, error) {
