@@ -93,6 +93,7 @@ func main() {
 			{
 				Name:   "enable",
 				Usage:  "Enable a peer (set allowed IPs)",
+				ArgsUsage: "<peerpublickey>",
 				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:     "ip",
@@ -100,13 +101,15 @@ func main() {
 						Required: true,
 					},
 				},
-				ArgsUsage: "<peerpublickey>",
 				Action: func(c *cli.Context) error {
 					if c.Args().Len() != 1 {
 						return fmt.Errorf("missing peer public key")
 					}
 					peerPublicKey := c.Args().Get(0)
 					ip := c.String("ip")
+					if ip == "" {
+						return fmt.Errorf("required flag 'ip' not set")
+					}
 					if err := updatePeerIPs(peerPublicKey, ip); err != nil {
 						fmt.Println(`{"error": "` + err.Error() + `"}`)
 						return nil
@@ -237,6 +240,7 @@ func updatePeerIPsInConfig(config, publicKey, ips string) string {
 	lines := strings.Split(config, "\n")
 	var updatedLines []string
 	inPeerBlock := false
+	updated := false
 
 	for _, line := range lines {
 		if strings.HasPrefix(line, "[Peer]") {
@@ -244,22 +248,29 @@ func updatePeerIPsInConfig(config, publicKey, ips string) string {
 		}
 
 		if inPeerBlock && strings.HasPrefix(line, "PublicKey") && strings.Contains(line, publicKey) {
-			inPeerBlock = false
-			// Skip the existing AllowedIPs line
+			// Add AllowedIPs line after PublicKey line
+			updatedLines = append(updatedLines, line)
+			updatedLines = append(updatedLines, "AllowedIPs = "+ips)
+			updated = true
 			continue
 		}
 
-		if !inPeerBlock && strings.HasPrefix(line, "PublicKey") && strings.Contains(line, publicKey) {
-			// Start a new peer block
-			updatedLines = append(updatedLines, line)
-			updatedLines = append(updatedLines, "AllowedIPs = "+ips)
-			inPeerBlock = true
+		if inPeerBlock && strings.HasPrefix(line, "PublicKey") && strings.Contains(line, publicKey) {
+			// Skip the existing AllowedIPs line
 			continue
 		}
 
 		if !inPeerBlock {
 			updatedLines = append(updatedLines, line)
 		}
+	}
+
+	if !updated {
+		// Add peer block if it doesn't exist
+		updatedLines = append(updatedLines, fmt.Sprintf(`
+[Peer]
+PublicKey = %s
+AllowedIPs = %s`, publicKey, ips))
 	}
 
 	return strings.Join(updatedLines, "\n")
