@@ -73,6 +73,48 @@ func main() {
 					return nil
 				},
 			},
+			{
+				Name:   "disable",
+				Usage:  "Disable a peer (set allowed IPs to empty)",
+				ArgsUsage: "<peerpublickey>",
+				Action: func(c *cli.Context) error {
+					if c.Args().Len() != 1 {
+						return fmt.Errorf("missing peer public key")
+					}
+					peerPublicKey := c.Args().Get(0)
+					if err := updatePeerIPs(peerPublicKey, ""); err != nil {
+						fmt.Println(`{"error": "` + err.Error() + `"}`)
+						return nil
+					}
+					fmt.Println(`{"status": "peer disabled successfully"}`)
+					return nil
+				},
+			},
+			{
+				Name:   "enable",
+				Usage:  "Enable a peer (set allowed IPs)",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:     "ip",
+						Usage:    "IP address to assign to the peer (e.g., '10.8.0.2/32,fd7f:8d4e:227f::2/128')",
+						Required: true,
+					},
+				},
+				ArgsUsage: "<peerpublickey>",
+				Action: func(c *cli.Context) error {
+					if c.Args().Len() != 1 {
+						return fmt.Errorf("missing peer public key")
+					}
+					peerPublicKey := c.Args().Get(0)
+					ip := c.String("ip")
+					if err := updatePeerIPs(peerPublicKey, ip); err != nil {
+						fmt.Println(`{"error": "` + err.Error() + `"}`)
+						return nil
+					}
+					fmt.Println(`{"status": "peer enabled successfully"}`)
+					return nil
+				},
+			},
 		},
 	}
 
@@ -144,6 +186,30 @@ func deletePeer(peerPublicKey string) error {
 	return nil
 }
 
+func updatePeerIPs(peerPublicKey, ips string) error {
+	// Read current config
+	config, err := os.ReadFile(wgConfigFile)
+	if err != nil {
+		return fmt.Errorf("failed to read wg0.conf: %w", err)
+	}
+
+	// Update peer block
+	updatedConfig := updatePeerIPsInConfig(string(config), peerPublicKey, ips)
+
+	// Write updated config
+	if err := os.WriteFile(wgConfigFile, []byte(updatedConfig), 0600); err != nil {
+		return fmt.Errorf("failed to write updated wg0.conf: %w", err)
+	}
+
+	// Update peer using `wg` command
+	err = exec.Command("wg", "set", "wg0", "peer", peerPublicKey, "allowed-ips", ips).Run()
+	if err != nil {
+		return fmt.Errorf("failed to update peer: %w", err)
+	}
+
+	return nil
+}
+
 func removePeerFromConfig(config, publicKey string) string {
 	lines := strings.Split(config, "\n")
 	var updatedLines []string
@@ -156,6 +222,38 @@ func removePeerFromConfig(config, publicKey string) string {
 
 		if inPeerBlock && strings.HasPrefix(line, "PublicKey") && strings.Contains(line, publicKey) {
 			inPeerBlock = false
+			continue
+		}
+
+		if !inPeerBlock {
+			updatedLines = append(updatedLines, line)
+		}
+	}
+
+	return strings.Join(updatedLines, "\n")
+}
+
+func updatePeerIPsInConfig(config, publicKey, ips string) string {
+	lines := strings.Split(config, "\n")
+	var updatedLines []string
+	inPeerBlock := false
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "[Peer]") {
+			inPeerBlock = true
+		}
+
+		if inPeerBlock && strings.HasPrefix(line, "PublicKey") && strings.Contains(line, publicKey) {
+			inPeerBlock = false
+			// Skip the existing AllowedIPs line
+			continue
+		}
+
+		if !inPeerBlock && strings.HasPrefix(line, "PublicKey") && strings.Contains(line, publicKey) {
+			// Start a new peer block
+			updatedLines = append(updatedLines, line)
+			updatedLines = append(updatedLines, "AllowedIPs = "+ips)
+			inPeerBlock = true
 			continue
 		}
 
