@@ -1,16 +1,16 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"strings"
+
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-// Peer represents the WireGuard peer details
 type Peer struct {
 	ClientPrivateKey string `json:"clientPrivateKey"`
 	Address          string `json:"address"`
@@ -18,101 +18,82 @@ type Peer struct {
 	ClientPublicKey  string `json:"clientPublicKey"`
 }
 
-// AddPeer adds a new WireGuard peer
-func AddPeer(ip string) {
-	privateKey := executeCommand("wg", "genkey")
-	publicKey := executeCommandWithInput("wg", privateKey, "pubkey")
-	presharedKey := executeCommand("wg", "genpsk")
+func addPeer(ip string) {
+	// Generate key pair
+	clientPrivateKey, err := wgtypes.GeneratePrivateKey()
+	if err != nil {
+		log.Fatalf("Error generating private key: %v", err)
+	}
+	clientPublicKey := clientPrivateKey.PublicKey()
 
+	// Generate preshared key
+	psk, err := wgtypes.GenerateKey()
+	if err != nil {
+		log.Fatalf("Error generating preshared key: %v", err)
+	}
+
+	// Create the peer
+	cmd := exec.Command("wg", "set", "wg0", "peer", clientPublicKey.String(), "allowed-ips", ip, "preshared-key", "/dev/stdin")
+	cmd.Stdin = strings.NewReader(psk.String())
+	if err := cmd.Run(); err != nil {
+		log.Fatalf("Error adding peer: %v", err)
+	}
+
+	// Save the configuration
+	cmd = exec.Command("wg-quick", "save", "wg0")
+	if err := cmd.Run(); err != nil {
+		log.Fatalf("Error saving configuration: %v", err)
+	}
+
+	// Create the response
 	peer := Peer{
-		ClientPrivateKey: strings.TrimSpace(privateKey),
+		ClientPrivateKey: clientPrivateKey.String(),
 		Address:          ip,
-		PresharedKey:     strings.TrimSpace(presharedKey),
-		ClientPublicKey:  strings.TrimSpace(publicKey),
+		PresharedKey:     psk.String(),
+		ClientPublicKey:  clientPublicKey.String(),
 	}
 
-	// Adding the peer to the wg0 interface
-	executeCommand("wg", "set", "wg0", "peer", peer.ClientPublicKey, "allowed-ips", ip, "preshared-key", peer.PresharedKey)
-
-	// Saving the wg0 configuration
-	executeCommand("wg-quick", "save", "wg0")
-
-	// Output the peer details in JSON format
-	jsonOutput, err := json.Marshal(peer)
+	// Output JSON
+	output, err := json.Marshal(peer)
 	if err != nil {
 		log.Fatalf("Error marshalling JSON: %v", err)
 	}
 
-	fmt.Println(string(jsonOutput))
+	fmt.Println(string(output))
 }
 
-// DeletePeer deletes a WireGuard peer by its public key
-func DeletePeer(clientPublicKey string) {
-	// Removing the peer from the wg0 interface
-	executeCommand("wg", "set", "wg0", "peer", clientPublicKey, "remove")
-
-	// Saving the wg0 configuration
-	executeCommand("wg-quick", "save", "wg0")
-
-	// Output success message in JSON format
-	response := map[string]string{
-		"status": "success",
-		"message": fmt.Sprintf("Peer with public key %s removed", clientPublicKey),
+func deletePeer(clientPublicKey string) {
+	// Remove the peer
+	cmd := exec.Command("wg", "set", "wg0", "peer", clientPublicKey, "remove")
+	if err := cmd.Run(); err != nil {
+		log.Fatalf("Error removing peer: %v", err)
 	}
 
-	jsonOutput, err := json.Marshal(response)
-	if err != nil {
-		log.Fatalf("Error marshalling JSON: %v", err)
+	// Save the configuration
+	cmd = exec.Command("wg-quick", "save", "wg0")
+	if err := cmd.Run(); err != nil {
+		log.Fatalf("Error saving configuration: %v", err)
 	}
 
-	fmt.Println(string(jsonOutput))
-}
-
-// executeCommand runs a command and returns its output
-func executeCommand(name string, arg ...string) string {
-	cmd := exec.Command(name, arg...)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	err := cmd.Run()
-	if err != nil {
-		log.Fatalf("Error executing command: %v", err)
-	}
-	return out.String()
-}
-
-// executeCommandWithInput runs a command with input and returns its output
-func executeCommandWithInput(name string, input string, arg ...string) string {
-	cmd := exec.Command(name, arg...)
-	cmd.Stdin = strings.NewReader(input)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	err := cmd.Run()
-	if err != nil {
-		log.Fatalf("Error executing command: %v", err)
-	}
-	return out.String()
+	fmt.Println("{\"status\": \"success\"}")
 }
 
 func main() {
 	if len(os.Args) < 3 {
-		log.Fatalf("Usage: %s <add|delete> <args>", os.Args[0])
+		fmt.Println("Usage: wgraven <add|delete> <arguments>")
+		os.Exit(1)
 	}
 
 	command := os.Args[1]
+	arg := os.Args[2]
+
 	switch command {
 	case "add":
-		if len(os.Args) != 3 {
-			log.Fatalf("Usage: %s add <ip>", os.Args[0])
-		}
-		ip := os.Args[2]
-		AddPeer(ip)
+		addPeer(arg)
 	case "delete":
-		if len(os.Args) != 3 {
-			log.Fatalf("Usage: %s delete <clientpublickey>", os.Args[0])
-		}
-		clientPublicKey := os.Args[2]
-		DeletePeer(clientPublicKey)
+		deletePeer(arg)
 	default:
-		log.Fatalf("Unknown command: %s", command)
+		fmt.Println("Unknown command:", command)
+		os.Exit(1)
 	}
 }
