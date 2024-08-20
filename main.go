@@ -1,14 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"strings"
-
-	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 type Peer struct {
@@ -16,6 +15,11 @@ type Peer struct {
 	Address          string `json:"address"`
 	PresharedKey     string `json:"presharedKey"`
 	ClientPublicKey  string `json:"clientPublicKey"`
+}
+
+type TransferInfo struct {
+	Download string `json:"download"`
+	Upload   string `json:"upload"`
 }
 
 func addPeer(ip string) {
@@ -78,20 +82,70 @@ func deletePeer(clientPublicKey string) {
 	fmt.Println("{\"status\": \"success\"}")
 }
 
+func transfer() {
+	// Get transfer information
+	cmd := exec.Command("wg", "show", "wg0", "transfer")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		log.Fatalf("Error getting transfer information: %v", err)
+	}
+
+	lines := strings.Split(out.String(), "\n")
+	transferInfo := make(map[string]TransferInfo)
+
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+
+		parts := strings.Fields(line)
+		if len(parts) < 3 {
+			continue
+		}
+
+		publicKey := parts[0]
+		download := parts[1]
+		upload := parts[2]
+
+		transferInfo[publicKey] = TransferInfo{
+			Download: download,
+			Upload:   upload,
+		}
+	}
+
+	// Output JSON
+	output, err := json.Marshal(transferInfo)
+	if err != nil {
+		log.Fatalf("Error marshalling JSON: %v", err)
+	}
+
+	fmt.Println(string(output))
+}
+
 func main() {
-	if len(os.Args) < 3 {
-		fmt.Println("Usage: wgraven <add|delete> <arguments>")
+	if len(os.Args) < 2 {
+		fmt.Println("Usage: wgraven <add|delete|transfer> <arguments>")
 		os.Exit(1)
 	}
 
 	command := os.Args[1]
-	arg := os.Args[2]
 
 	switch command {
 	case "add":
-		addPeer(arg)
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: wgraven add <ip>")
+			os.Exit(1)
+		}
+		addPeer(os.Args[2])
 	case "delete":
-		deletePeer(arg)
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: wgraven delete <clientpublickey>")
+			os.Exit(1)
+		}
+		deletePeer(os.Args[2])
+	case "transfer":
+		transfer()
 	default:
 		fmt.Println("Unknown command:", command)
 		os.Exit(1)
