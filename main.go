@@ -1,190 +1,135 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/base64"
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"strings"
-
-	"github.com/urfave/cli/v2"
-	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-const (
-	wgConfigFile = "/etc/wireguard/wg0.conf"
-)
-
-type PeerInfo struct {
+// Peer represents a WireGuard peer.
+type Peer struct {
 	PrivateKey   string `json:"privateKey"`
 	Address      string `json:"address"`
 	PresharedKey string `json:"presharedKey"`
 	PublicKey    string `json:"publicKey"`
 }
 
-func main() {
-	app := &cli.App{
-		Name:  "wgraven",
-		Usage: "Manage WireGuard peers",
-		Commands: []*cli.Command{
-			{
-				Name:   "add",
-				Usage:  "Add a new peer to WireGuard",
-				Flags: []cli.Flag{
-					&cli.StringFlag{
-						Name:     "ip",
-						Usage:    "IP address to assign to the new peer (e.g., '10.8.0.2/32,fd42:42:42::2/128')",
-						Required: true,
-					},
-				},
-				Action: func(c *cli.Context) error {
-					ip := c.String("ip")
-					peerInfo, err := addPeer(ip)
-					if err != nil {
-						fmt.Println(`{"error": "` + err.Error() + `"}`)
-						return nil
-					}
-					// Output peer info as JSON
-					peerInfoJSON, err := json.Marshal(peerInfo)
-					if err != nil {
-						return fmt.Errorf("failed to marshal peer info: %w", err)
-					}
-					fmt.Println(string(peerInfoJSON))
-					return nil
-				},
-			},
-			{
-				Name:   "delete",
-				Usage:  "Delete a peer from WireGuard",
-				ArgsUsage: "<peerpublickey>",
-				Action: func(c *cli.Context) error {
-					if c.Args().Len() != 1 {
-						return fmt.Errorf("missing peer public key")
-					}
-					peerPublicKey := c.Args().Get(0)
-					if err := deletePeer(peerPublicKey); err != nil {
-						fmt.Println(`{"error": "` + err.Error() + `"}`)
-						return nil
-					}
-					fmt.Println(`{"status": "peer deleted successfully"}`)
-					return nil
-				},
-			},
-		},
-	}
+func addPeer(ip string) {
+	// Generate keys for the new peer
+	privateKey := execCommand("wg", "genkey")
+	publicKey := execCommand("wg", "pubkey", fmt.Sprintf("<(echo %s)", privateKey))
+	presharedKey := execCommand("wg", "genpsk")
 
-	err := app.Run(os.Args)
-	if err != nil {
-		log.Fatal(err)
-	}
-}
-
-func addPeer(ip string) (*PeerInfo, error) {
-	peerPrivateKey, err := wgtypes.GeneratePrivateKey()
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate private key: %w", err)
-	}
-	peerPublicKey := peerPrivateKey.PublicKey()
-
-	preSharedKey, err := generatePSK()
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate pre-shared key: %w", err)
-	}
-
-	// Add the new peer to wg0.conf
+	// Format the peer section for wg0.conf
 	peerConfig := fmt.Sprintf(`
 [Peer]
 PublicKey = %s
 PresharedKey = %s
 AllowedIPs = %s
-`, peerPublicKey.String(), preSharedKey, ip)
+`, publicKey, presharedKey, ip)
 
-	if err := appendToFile(wgConfigFile, peerConfig); err != nil {
-		return nil, fmt.Errorf("failed to append peer config to wg0.conf: %w", err)
-	}
+	// Append the new peer to wg0.conf
+	appendToFile("/etc/wireguard/wg0.conf", peerConfig)
 
-	// Apply the new peer configuration using `wg` command
-	err = exec.Command("wg", "set", "wg0", "peer", peerPublicKey.String(), "allowed-ips", ip).Run()
-	if err != nil {
-		return nil, fmt.Errorf("failed to set peer: %w", err)
-	}
+	// Sync the WireGuard configuration
+	execCommand("wg", "syncconf", "wg0", "<(wg-quick strip wg0)")
 
-	return &PeerInfo{
-		PrivateKey:   peerPrivateKey.String(),
+	// Return the peer data as JSON
+	peer := Peer{
+		PrivateKey:   privateKey,
 		Address:      ip,
-		PresharedKey: preSharedKey,
-		PublicKey:    peerPublicKey.String(),
-	}, nil
+		PresharedKey: presharedKey,
+		PublicKey:    publicKey,
+	}
+	peerJSON, _ := json.Marshal(peer)
+	fmt.Println(string(peerJSON))
 }
 
-func deletePeer(peerPublicKey string) error {
-	// Read current config
-	config, err := os.ReadFile(wgConfigFile)
+func deletePeer(publicKey string) {
+	// Read wg0.conf
+	data, err := ioutil.ReadFile("/etc/wireguard/wg0.conf")
 	if err != nil {
-		return fmt.Errorf("failed to read wg0.conf: %w", err)
+		fmt.Printf(`{"error": "Unable to read wg0.conf: %s"}`, err)
+		return
 	}
 
-	// Remove peer block
-	updatedConfig := removePeerFromConfig(string(config), peerPublicKey)
-
-	// Write updated config
-	if err := os.WriteFile(wgConfigFile, []byte(updatedConfig), 0600); err != nil {
-		return fmt.Errorf("failed to write updated wg0.conf: %w", err)
-	}
-
-	// Remove peer using `wg` command
-	err = exec.Command("wg", "set", "wg0", "peer", peerPublicKey, "remove").Run()
-	if err != nil {
-		return fmt.Errorf("failed to remove peer: %w", err)
-	}
-
-	return nil
-}
-
-func removePeerFromConfig(config, publicKey string) string {
-	lines := strings.Split(config, "\n")
-	var updatedLines []string
-	inPeerBlock := false
-
-	for _, line := range lines {
-		if strings.HasPrefix(line, "[Peer]") {
-			inPeerBlock = true
+	// Remove the peer with the specified public key
+	config := string(data)
+	peerStart := strings.Index(config, "[Peer]")
+	for peerStart != -1 {
+		peerEnd := strings.Index(config[peerStart:], "[Peer]")
+		if peerEnd == -1 {
+			peerEnd = len(config)
+		} else {
+			peerEnd += peerStart
 		}
 
-		if inPeerBlock && strings.HasPrefix(line, "PublicKey") && strings.Contains(line, publicKey) {
-			inPeerBlock = false
-			continue
+		peerConfig := config[peerStart:peerEnd]
+		if strings.Contains(peerConfig, fmt.Sprintf("PublicKey = %s", publicKey)) {
+			config = config[:peerStart] + config[peerEnd:]
+			break
 		}
-
-		if !inPeerBlock {
-			updatedLines = append(updatedLines, line)
-		}
+		peerStart = strings.Index(config[peerEnd:], "[Peer]") + peerEnd
 	}
 
-	return strings.Join(updatedLines, "\n")
-}
-
-func generatePSK() (string, error) {
-	key := make([]byte, wgtypes.KeyLen)
-	_, err := rand.Read(key)
-	if err != nil {
-		return "", fmt.Errorf("failed to generate pre-shared key: %w", err)
+	// Write the updated configuration back to wg0.conf
+	if err := ioutil.WriteFile("/etc/wireguard/wg0.conf", []byte(config), 0644); err != nil {
+		fmt.Printf(`{"error": "Unable to write to wg0.conf: %s"}`, err)
+		return
 	}
-	return base64.StdEncoding.EncodeToString(key), nil
+
+	// Sync the WireGuard configuration
+	execCommand("wg", "syncconf", "wg0", "<(wg-quick strip wg0)")
+
+	fmt.Println(`{"status": "success"}`)
 }
 
-func appendToFile(filename, text string) error {
-	f, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, 0600)
+func execCommand(name string, args ...string) string {
+	cmd := exec.Command(name, args...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err := cmd.Run()
 	if err != nil {
-		return err
+		fmt.Printf(`{"error": "Command failed: %s"}`, err)
+		os.Exit(1)
+	}
+	return strings.TrimSpace(out.String())
+}
+
+func appendToFile(filename string, content string) {
+	f, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Printf(`{"error": "Unable to open file: %s"}`, err)
+		os.Exit(1)
 	}
 	defer f.Close()
 
-	if _, err = f.WriteString(text); err != nil {
-		return err
+	if _, err := f.WriteString(content); err != nil {
+		fmt.Printf(`{"error": "Unable to write to file: %s"}`, err)
+		os.Exit(1)
 	}
-	return nil
+}
+
+func main() {
+	if len(os.Args) < 3 {
+		fmt.Println(`{"error": "Invalid arguments"}`)
+		os.Exit(1)
+	}
+
+	command := os.Args[1]
+	arg := os.Args[2]
+
+	switch command {
+	case "add":
+		addPeer(arg)
+	case "delete":
+		deletePeer(arg)
+	default:
+		fmt.Println(`{"error": "Unknown command"}`)
+		os.Exit(1)
+	}
 }
