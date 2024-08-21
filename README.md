@@ -6,7 +6,7 @@
 
 - **Add a Peer**: Generate a new WireGuard peer with a private key, public key, and preshared key.
 - **Delete a Peer**: Remove an existing WireGuard peer by its public key.
-- **Transfer Statistics**: Retrieve current transfer statistics (download and upload) for each peer.
+- **Transfer Statistics**: Retrieve current transfer statistics in byte (download and upload) for each peer.
 
 ## Installation
 
