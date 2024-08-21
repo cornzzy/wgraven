@@ -14,7 +14,7 @@
 2. Clone the repository and build the `wgraven` binary:
 
     ```bash
-    git clone https://github.com/yourusername/wgraven.git
+    git clone https://github.com/cornzzy/wgraven.git
     cd wgraven
     go get
     go build
