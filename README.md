@@ -30,7 +30,7 @@ Add a new WireGuard peer with a specified IP address.
 ```bash
 wgraven add "<ip>"
 ```
-Example: wgraven add 10.25.0.2/32,fd42:42:42::2/128
+Example: `wgraven add 10.25.0.2/32,fd42:42:42::2/128`
 
 ### Delete a Peer
 
@@ -39,7 +39,7 @@ Delete a WireGuard peer with a specified peer public key.
 ```bash
 wgraven delete "<key>"
 ```
-Example: wgraven delete d8e8fca2dc0f896fd7cb4cb0031ba249d2c7c0f8e3de
+Example: `wgraven delete d8e8fca2dc0f896fd7cb4cb0031ba249d2c7c0f8e3de`
 
 ### Show transfers
 
