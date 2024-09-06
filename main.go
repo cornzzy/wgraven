@@ -108,8 +108,8 @@ func transfer() {
 		}
 
 		publicKey := parts[0]
-		download := parts[1]
-		upload := parts[2]
+		upload := parts[1]
+		download := parts[2]
 
 		transferInfo[publicKey] = TransferInfo{
 			Download: download,
