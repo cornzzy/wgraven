@@ -92,6 +92,18 @@ func (s *apiServer) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch parts[1] {
+	case "key":
+		if len(parts) != 2 {
+			http.NotFound(w, r)
+			return
+		}
+		keys, err := generatePeerKeys()
+		if err != nil {
+			s.writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.writeJSON(w, http.StatusOK, keys)
+
 	case "add":
 		if len(parts) != 3 {
 			http.NotFound(w, r)
@@ -102,7 +114,13 @@ func (s *apiServer) handle(w http.ResponseWriter, r *http.Request) {
 			s.writeError(w, http.StatusBadRequest, "invalid ip")
 			return
 		}
-		peer, err := addPeer(ip)
+		pubkey := r.URL.Query().Get("pubkey")
+		psk := r.URL.Query().Get("psk")
+		if pubkey == "" || psk == "" {
+			s.writeError(w, http.StatusBadRequest, "pubkey and psk query parameters are required")
+			return
+		}
+		peer, err := addExistingPeer(ip, pubkey, psk)
 		if err != nil {
 			s.writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -174,9 +192,10 @@ func runAPI(port int, quiet bool) error {
 	fmt.Printf("API key: %s\n", apiKey)
 	if !quiet {
 		fmt.Printf("Listening on https://0.0.0.0:%d/%s/\n", port, apiKey)
-		fmt.Printf("  Add peer:    https://<ip>:%d/%s/add/<ip>\n", port, apiKey)
-		fmt.Printf("  Delete peer: https://<ip>:%d/%s/delete/<clientpubkey>\n", port, apiKey)
-		fmt.Printf("  Transfer:    https://<ip>:%d/%s/transfer\n", port, apiKey)
+		fmt.Printf("  Generate keys: https://<ip>:%d/%s/key\n", port, apiKey)
+		fmt.Printf("  Add peer:      https://<ip>:%d/%s/add/<ip>?pubkey=<pubkey>&psk=<psk>\n", port, apiKey)
+		fmt.Printf("  Delete peer:   https://<ip>:%d/%s/delete/<clientpubkey>\n", port, apiKey)
+		fmt.Printf("  Transfer:      https://<ip>:%d/%s/transfer\n", port, apiKey)
 		log.Printf("Starting HTTPS API on %s", addr)
 	}
 

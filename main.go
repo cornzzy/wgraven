@@ -16,7 +16,7 @@ import (
 
 type Peer struct {
 	ClientPrivateKey string `json:"clientPrivateKey"`
-	Address          string `json:"address"`
+	Address          string `json:"address,omitempty"`
 	PresharedKey     string `json:"presharedKey"`
 	ClientPublicKey  string `json:"clientPublicKey"`
 }
@@ -26,7 +26,14 @@ type TransferInfo struct {
 	Upload   string `json:"upload"`
 }
 
-func addPeer(ip string) (Peer, error) {
+func normalizeAllowedIP(ip string) string {
+	if strings.Contains(ip, "/") {
+		return ip
+	}
+	return ip + "/32"
+}
+
+func generatePeerKeys() (Peer, error) {
 	clientPrivateKey, err := wgtypes.GeneratePrivateKey()
 	if err != nil {
 		return Peer{}, fmt.Errorf("generating private key: %w", err)
@@ -38,22 +45,60 @@ func addPeer(ip string) (Peer, error) {
 		return Peer{}, fmt.Errorf("generating preshared key: %w", err)
 	}
 
-	cmd := exec.Command("wg", "set", "wg0", "peer", clientPublicKey.String(), "allowed-ips", ip, "preshared-key", "/dev/stdin")
-	cmd.Stdin = strings.NewReader(psk.String())
+	return Peer{
+		ClientPrivateKey: clientPrivateKey.String(),
+		PresharedKey:     psk.String(),
+		ClientPublicKey:  clientPublicKey.String(),
+	}, nil
+}
+
+func addPeerWithKeys(allowedIP, clientPublicKey, psk string) error {
+	if _, err := wgtypes.ParseKey(clientPublicKey); err != nil {
+		return fmt.Errorf("invalid public key: %w", err)
+	}
+	if _, err := wgtypes.ParseKey(psk); err != nil {
+		return fmt.Errorf("invalid preshared key: %w", err)
+	}
+
+	cmd := exec.Command("wg", "set", "wg0", "peer", clientPublicKey, "allowed-ips", allowedIP, "preshared-key", "/dev/stdin")
+	cmd.Stdin = strings.NewReader(psk)
 	if err := cmd.Run(); err != nil {
-		return Peer{}, fmt.Errorf("adding peer: %w", err)
+		return fmt.Errorf("adding peer: %w", err)
 	}
 
 	cmd = exec.Command("wg-quick", "save", "wg0")
 	if err := cmd.Run(); err != nil {
-		return Peer{}, fmt.Errorf("saving configuration: %w", err)
+		return fmt.Errorf("saving configuration: %w", err)
+	}
+
+	return nil
+}
+
+func addPeer(ip string) (Peer, error) {
+	keys, err := generatePeerKeys()
+	if err != nil {
+		return Peer{}, err
+	}
+
+	allowedIP := normalizeAllowedIP(ip)
+	if err := addPeerWithKeys(allowedIP, keys.ClientPublicKey, keys.PresharedKey); err != nil {
+		return Peer{}, err
+	}
+
+	keys.Address = allowedIP
+	return keys, nil
+}
+
+func addExistingPeer(ip, clientPublicKey, psk string) (Peer, error) {
+	allowedIP := normalizeAllowedIP(ip)
+	if err := addPeerWithKeys(allowedIP, clientPublicKey, psk); err != nil {
+		return Peer{}, err
 	}
 
 	return Peer{
-		ClientPrivateKey: clientPrivateKey.String(),
-		Address:          ip,
-		PresharedKey:     psk.String(),
-		ClientPublicKey:  clientPublicKey.String(),
+		Address:         allowedIP,
+		PresharedKey:    psk,
+		ClientPublicKey: clientPublicKey,
 	}, nil
 }
 
@@ -116,7 +161,7 @@ func writeJSON(w io.Writer, v any) error {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: wgraven <add|delete|transfer|api> <arguments>")
+		fmt.Println("Usage: wgraven <add|delete|transfer|key|api> <arguments>")
 		os.Exit(1)
 	}
 
@@ -150,6 +195,14 @@ func main() {
 			log.Fatalf("Error getting transfer information: %v", err)
 		}
 		if err := writeJSON(os.Stdout, transferInfo); err != nil {
+			log.Fatalf("Error marshalling JSON: %v", err)
+		}
+	case "key":
+		keys, err := generatePeerKeys()
+		if err != nil {
+			log.Fatalf("Error generating keys: %v", err)
+		}
+		if err := writeJSON(os.Stdout, keys); err != nil {
 			log.Fatalf("Error marshalling JSON: %v", err)
 		}
 	case "api":
