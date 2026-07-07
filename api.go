@@ -14,7 +14,6 @@ import (
 	"log"
 	"math/big"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 )
@@ -22,6 +21,16 @@ import (
 type apiServer struct {
 	apiKey string
 	quiet  bool
+}
+
+type addPeerRequest struct {
+	Address         string `json:"address"`
+	ClientPublicKey string `json:"clientPublicKey"`
+	PresharedKey    string `json:"presharedKey"`
+}
+
+type deletePeerRequest struct {
+	ClientPublicKey string `json:"clientPublicKey"`
 }
 
 func generateAPIKey() (string, error) {
@@ -78,6 +87,14 @@ func (s *apiServer) writeError(w http.ResponseWriter, status int, message string
 	s.writeJSON(w, status, map[string]string{"error": message})
 }
 
+func (s *apiServer) decodeJSON(r *http.Request, v any) error {
+	defer r.Body.Close()
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *apiServer) handle(w http.ResponseWriter, r *http.Request) {
 	path := strings.Trim(r.URL.Path, "/")
 	if path == "" {
@@ -105,22 +122,20 @@ func (s *apiServer) handle(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusOK, keys)
 
 	case "add":
-		if len(parts) != 3 {
+		if len(parts) != 2 || r.Method != http.MethodPost {
 			http.NotFound(w, r)
 			return
 		}
-		ip, err := url.PathUnescape(parts[2])
-		if err != nil {
-			s.writeError(w, http.StatusBadRequest, "invalid ip")
+		var req addPeerRequest
+		if err := s.decodeJSON(r, &req); err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
-		pubkey := r.URL.Query().Get("pubkey")
-		psk := r.URL.Query().Get("psk")
-		if pubkey == "" || psk == "" {
-			s.writeError(w, http.StatusBadRequest, "pubkey and psk query parameters are required")
+		if req.Address == "" || req.ClientPublicKey == "" || req.PresharedKey == "" {
+			s.writeError(w, http.StatusBadRequest, "address, clientPublicKey, and presharedKey are required")
 			return
 		}
-		peer, err := addExistingPeer(ip, pubkey, psk)
+		peer, err := addExistingPeer(req.Address, req.ClientPublicKey, req.PresharedKey)
 		if err != nil {
 			s.writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -128,16 +143,20 @@ func (s *apiServer) handle(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusOK, peer)
 
 	case "delete":
-		if len(parts) != 3 {
+		if len(parts) != 2 || r.Method != http.MethodPost {
 			http.NotFound(w, r)
 			return
 		}
-		clientPublicKey, err := url.PathUnescape(parts[2])
-		if err != nil {
-			s.writeError(w, http.StatusBadRequest, "invalid client public key")
+		var req deletePeerRequest
+		if err := s.decodeJSON(r, &req); err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid JSON body")
 			return
 		}
-		if err := deletePeer(clientPublicKey); err != nil {
+		if req.ClientPublicKey == "" {
+			s.writeError(w, http.StatusBadRequest, "clientPublicKey is required")
+			return
+		}
+		if err := deletePeer(req.ClientPublicKey); err != nil {
 			s.writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -193,8 +212,8 @@ func runAPI(port int, quiet bool) error {
 	if !quiet {
 		fmt.Printf("Listening on https://0.0.0.0:%d/%s/\n", port, apiKey)
 		fmt.Printf("  Generate keys: https://<ip>:%d/%s/key\n", port, apiKey)
-		fmt.Printf("  Add peer:      https://<ip>:%d/%s/add/<ip>?pubkey=<pubkey>&psk=<psk>\n", port, apiKey)
-		fmt.Printf("  Delete peer:   https://<ip>:%d/%s/delete/<clientpubkey>\n", port, apiKey)
+		fmt.Printf("  Add peer:      POST https://<ip>:%d/%s/add  {address, clientPublicKey, presharedKey}\n", port, apiKey)
+		fmt.Printf("  Delete peer:   POST https://<ip>:%d/%s/delete  {clientPublicKey}\n", port, apiKey)
 		fmt.Printf("  Transfer:      https://<ip>:%d/%s/transfer\n", port, apiKey)
 		log.Printf("Starting HTTPS API on %s", addr)
 	}
